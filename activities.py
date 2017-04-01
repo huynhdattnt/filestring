@@ -38,12 +38,12 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                 al_fm.country
             FROM
                 (SELECT
-                    al_l.actor_uid as actor_uid,
                     al_l.action as action,
                     al_l.city as client_city,
                     al_l.country as client_country,
                     al_l.client_platform as client_platform,
                     al_l.created_time as created_time,
+                    fm.user_id as user_id,
                     fm.started_time as started_time,
                     fm.timespan as timespan,
                     fm.platform as platform,
@@ -62,15 +62,17 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                         FROM
                             %(additional_sharer_from_clause)s
                         WHERE
-                            al.action = 'download'
+                            al.action in ('download', 'Print')
                             AND al.file_id = %(file_id)s
                             %(additional_sharer_where_clause)s
                     ) al_l
-                    LEFT JOIN
+                    RIGHT JOIN
                     (
                         SELECT
+                            COALESCE (lead(f.started_time) over (order by f.started_time), NOW()) as next_created_time,
                             f.file_id as file_id,
                             f.started_time,
+                            f.user_id,
                             f.completed_time,
                             f.timespan,
                             d.platform as platform,
@@ -84,108 +86,11 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                         ORDER BY f.started_time ASC) fm
                     ON
                         al_l.created_time >= fm.started_time
-                        AND al_l.created_time < (
-                            SELECT CASE WHEN NOT EXISTS (SELECT started_time
-                                                    FROM file_metrics
-                                                    WHERE started_time > fm.started_time
-                                                    AND file_id = %(file_id)s
-                                                    ORDER BY started_time ASC
-                                                    LIMIT 1)
-                                                    THEN NOW()
-                                ELSE (SELECT started_time
-                                                    FROM file_metrics
-                                                    WHERE started_time > fm.started_time
-                                                    AND file_id = %(file_id)s
-                                                    ORDER BY started_time ASC
-                                                    LIMIT 1)
-                                END
-                            )
+                        AND al_l.created_time < fm.next_created_time
+                        AND al_l.file_id = fm.file_id
                 ORDER BY al_l.created_time ASC) al_fm,
             users u
-            WHERE u.user_id = al_fm.actor_uid
-            UNION ALL
-            SELECT
-                u.email as email,
-                u.first_name as first_name,
-                u.last_name as last_name,
-                u.user_id as uid,
-                al_fm.action,
-                al_fm.client_city,
-                al_fm.client_country,
-                al_fm.client_platform,
-                al_fm.created_time,
-                al_fm.started_time,
-                al_fm.timespan,
-                al_fm.platform,
-                al_fm.city,
-                al_fm.country
-            FROM
-                (SELECT
-                    al_l.actor_uid as actor_uid,
-                    al_l.action as action,
-                    al_l.city as client_city,
-                    al_l.country as client_country,
-                    al_l.client_platform as client_platform,
-                    al_l.created_time as created_time,
-                    fm.started_time as started_time,
-                    fm.timespan as timespan,
-                    fm.platform as platform,
-                    fm.city as city,
-                    fm.country as country
-                FROM
-                    (
-                        SELECT
-                            al.file_id as file_id,
-                            al.actor_uid as actor_uid,
-                            al.action as action,
-                            loc.city as city,
-                            loc.country as country,
-                            al.client_platform as client_platform,
-                            al.created_time as created_time
-                        FROM
-                            %(additional_sharer_from_clause)s
-                        WHERE
-                            al.action = 'Print'
-                            AND al.file_id = %(file_id)s
-                            %(additional_sharer_where_clause)s
-                    ) al_l
-                    LEFT JOIN
-                    (
-                        SELECT
-                            f.file_id as file_id,
-                            f.started_time,
-                            f.completed_time,
-                            f.timespan,
-                            d.platform as platform,
-                            loc.city as city,
-                            loc.country as country
-                        FROM file_metrics f
-                            INNER JOIN device_metrics d ON d.tracking_id = f.tracking_id
-                            LEFT JOIN locations loc ON loc.location_id = f.location_id
-                        WHERE f.file_id = %(file_id)s
-                        %(additional_time_clause)s
-                        ORDER BY f.started_time ASC) fm
-                    ON
-                        al_l.created_time >= fm.started_time
-                        AND al_l.created_time < (
-                            SELECT CASE WHEN NOT EXISTS (SELECT started_time
-                                                    FROM file_metrics
-                                                    WHERE started_time > fm.started_time
-                                                    AND file_id = %(file_id)s
-                                                    ORDER BY started_time ASC
-                                                    LIMIT 1)
-                                                    THEN NOW()
-                                ELSE (SELECT started_time
-                                                    FROM file_metrics
-                                                    WHERE started_time > fm.started_time
-                                                    AND file_id = %(file_id)s
-                                                    ORDER BY started_time ASC
-                                                    LIMIT 1)
-                                END
-                            )
-                ORDER BY al_l.created_time ASC) al_fm,
-            users u
-            WHERE u.user_id = al_fm.actor_uid
+            WHERE u.user_id = al_fm.user_id
             '''
         if not from_time:
             query = query.replace('%(additional_time_clause)s', '')
@@ -227,9 +132,8 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                     'uid': sharer_id,
                 }
             )
-
         activity_makeup = []
-        # mapping column before make result data
+        #mapping column before make result data
         numbermap = {'email': 1, 'first_name': 2, 'last_name': 3, 'uid': 4, 'action': 5, 'client_city': 6, 'client_country': 7,
                      'client_platform': 8, 'created_time': 9, 'started_time': 10, 'timespan': 11, 'platform': 12,
                      'city': 13, 'country': 14
@@ -238,6 +142,9 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
         for item in rs:
             item_cv = [tuple(item[i] for i in sorted(item, key=numbermap.__getitem__))]
             activity_makeup = activity_makeup + item_cv
+
+        activity_makeup = sorted(activity_makeup, key=lambda activity: activity[4])
+
         activities = []
         for infos, data in groupby(activity_makeup, key=itemgetter(0, 1, 2, 3)):
             activities_belong_user = [d for d in data]
@@ -261,7 +168,6 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                 _download = []
                 for s in session_data:
                     act = {}
-                    # act['started_time'] = to_iso8601(s[8]) if s[8] else session_data[0].get('created_time', None)
                     act['started_time'] = to_iso8601(s[8])
                     act['location'] = s[5] + ', ' + s[6] if s[5] else ''
                     act['device_name'] = s[7]
