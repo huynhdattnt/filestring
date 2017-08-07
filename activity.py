@@ -20,6 +20,14 @@ from operator import itemgetter
 
 
 def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_owner, connection):
+        '''
+        Get all activities of user
+        :param pdf_file:
+            - sharer_id: identity of a person sharing a file
+            - file_id: identity of file
+        :return:
+            list of activities of user
+        '''
         query = '''
             SELECT
                 u.email as email,
@@ -133,12 +141,12 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
                 }
             )
         activity_makeup = []
-        #mapping column before make result data
+        # Mapping column before make result data
         numbermap = {'email': 1, 'first_name': 2, 'last_name': 3, 'uid': 4, 'action': 5, 'client_city': 6, 'client_country': 7,
                      'client_platform': 8, 'created_time': 9, 'started_time': 10, 'timespan': 11, 'platform': 12,
                      'city': 13, 'country': 14
                      }
-        # make up result to [(value1 of session 1, value2 of session 1 ...), (value1 of session 2, value of session 2) ....]
+        # Make up result to [(value1 of session 1, value2 of session 1 ...), (value1 of session 2, value of session 2) ....]
         for item in rs:
             item_cv = [tuple(item[i] for i in sorted(item, key=numbermap.__getitem__))]
             activity_makeup = activity_makeup + item_cv
@@ -151,19 +159,19 @@ def _get_activities_by_file(self, sharer_id, file_id, from_time, to_time, is_own
             logger.info('activities_belong_user is: {}'.format(activities_belong_user))
             for open, session_data in groupby(activities_belong_user, key=itemgetter(9, 12, 13, 10, 11)):
                 activity = {}
-                # get infos of receiver about: first name, last name, email, uid
+                # Get infos of receiver about: first name, last name, email, uid
                 activity['recipient'] = {}
                 activity['recipient']['email'] = infos[0]
                 activity['recipient']['first_name'] = infos[1]
                 activity['recipient']['last_name'] = infos[2]
                 activity['recipient']['uid'] = infos[3]
-                # get infos about time, location, duration when a session has been opened.
+                # Get infos about time, location, duration when a session has been opened.
                 activity['open'] = {}
                 activity['open']['started_time'] = to_iso8601(open[0])
                 activity['open']['location'] = open[1] + ', ' + open[2] if open[1] and open[2] else ''
                 activity['open']['duration'] = open[3]
                 activity['open']['device_name'] = open[4]
-                # group action print and download that belongs to this session.
+                # Group action print and download that belongs to this session.
                 _print = []
                 _download = []
                 for s in session_data:
